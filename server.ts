@@ -220,10 +220,16 @@ async function startServer() {
   // Settings API
   app.post("/api/login", (req, res) => {
     const { username, password } = req.body;
-    if (username === 'admin' && password === '12345') {
-      res.json({ username: 'admin', role: 'admin' });
-    } else if (username === 'staff' && password === '12345') {
-      res.json({ username: 'staff', role: 'staff' });
+    
+    const adminId = process.env.ADMIN_ID || 'admin';
+    const adminPass = process.env.ADMIN_PASSWORD || '12345';
+    const staffId = process.env.STAFF_ID || 'staff';
+    const staffPass = process.env.STAFF_PASSWORD || '12345';
+
+    if (username === adminId && password === adminPass) {
+      res.json({ username: adminId, role: 'admin' });
+    } else if (username === staffId && password === staffPass) {
+      res.json({ username: staffId, role: 'staff' });
     } else {
       res.status(401).json({ error: 'Invalid credentials' });
     }

@@ -280,12 +280,19 @@ export default function App() {
     const formData = new FormData(e.currentTarget);
     const { username, password } = Object.fromEntries(formData.entries());
     
+    // Client-side credentials (for static deployments like Netlify)
+    const vAdminId = (import.meta as any).env.VITE_ADMIN_ID || 'admin';
+    const vAdminPass = (import.meta as any).env.VITE_ADMIN_PASSWORD || '12345';
+    const vStaffId = (import.meta as any).env.VITE_STAFF_ID || 'staff';
+    const vStaffPass = (import.meta as any).env.VITE_STAFF_PASSWORD || '12345';
+
     try {
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
+
       if (res.ok) {
         const userData = await res.json();
         setUser(userData);
@@ -293,11 +300,39 @@ export default function App() {
           setActiveTab('automation');
         }
         toast.success(`Welcome back, ${userData.username}!`);
+        return;
+      }
+      
+      // If we get here, the API call failed (e.g. 401, 404, etc.)
+      // If it's a 401, it's definitely invalid credentials
+      if (res.status === 401) {
+        toast.error("Invalid username or password");
+        return;
+      }
+      
+      // If it's not 401 (e.g. 404 on Netlify), try client-side fallback
+      if (username === vAdminId && password === vAdminPass) {
+        setUser({ username: String(username), role: 'admin' });
+        toast.success(`Welcome back (Static Mode), ${username}!`);
+      } else if (username === vStaffId && password === vStaffPass) {
+        setUser({ username: String(username), role: 'staff' });
+        setActiveTab('automation');
+        toast.success(`Welcome back (Static Mode), ${username}!`);
       } else {
         toast.error("Invalid username or password");
       }
     } catch (err) {
-      toast.error("Login failed");
+      // Network error or backend missing - try client-side fallback
+      if (username === vAdminId && password === vAdminPass) {
+        setUser({ username: String(username), role: 'admin' });
+        toast.success(`Welcome back (Offline Mode), ${username}!`);
+      } else if (username === vStaffId && password === vStaffPass) {
+        setUser({ username: String(username), role: 'staff' });
+        setActiveTab('automation');
+        toast.success(`Welcome back (Offline Mode), ${username}!`);
+      } else {
+        toast.error("Login failed. Check your connection or credentials.");
+      }
     }
   };
 
