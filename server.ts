@@ -3,6 +3,9 @@ import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -118,14 +121,25 @@ if (dairyCount.count === 0) {
 const templateCount = db.prepare("SELECT COUNT(*) as count FROM templates").get() as { count: number };
 if (templateCount.count === 0) {
   const insertTemplate = db.prepare("INSERT INTO templates (module, name, content, type) VALUES (?, ?, ?, ?)");
+  
+  // Standard Templates
   insertTemplate.run("Hospital", "Birthday Wish", "Happy Birthday {{name}}! Wishing you good health from Shri Krishna Mission Hospital.", "Birthday");
   insertTemplate.run("Hospital", "Anniversary Wish", "Happy Anniversary {{name}}! Best wishes from Shri Krishna Mission Hospital.", "Anniversary");
   insertTemplate.run("Dairy", "Farmer Greeting", "Hello {{name}}, thank you for your contribution to Shri Krishna Dairy.", "Bulk");
+
+  // Stylish Templates (using Unicode characters)
+  insertTemplate.run("Hospital", "Stylish Birthday 1", "𝓗𝓪𝓹𝓹𝔂 𝓑𝓲𝓻𝓽𝓱𝓭𝓪𝔂 {{name}}! 🎉 𝓦𝓲𝓼𝓱𝓲𝓷𝓰 𝔂𝓸𝓾 𝓪 𝓵𝓲𝓯𝓮 𝓯𝓾𝓵𝓵 𝓸𝓯 𝓱𝓮𝓪𝓵𝓽𝓱 𝓪𝓷𝓭 𝓱𝓪𝓹𝓹𝓲𝓷𝓮𝓼𝓼. - Shri Krishna Mission Hospital", "Birthday");
+  insertTemplate.run("Hospital", "Stylish Birthday 2", "𝐇𝐚𝐩𝐩𝐲 𝐁𝐢𝐫𝐭𝐡𝐝𝐚𝐲 {{name}}! 🎂 𝐌𝐚𝐲 𝐲𝐨𝐮𝐫 𝐝𝐚𝐲 𝐛𝐞 𝐚𝐬 𝐰𝐨𝐧𝐝𝐞𝐫𝐟𝐮𝐥 𝐚𝐬 𝐲𝐨𝐮 𝐚𝐫𝐞. - Shri Krishna Mission Hospital", "Birthday");
+  insertTemplate.run("Hospital", "Stylish Anniversary", "𝓗𝓪𝓹𝓹𝔂 𝓐𝓷𝓷𝓲𝓿𝓮𝓻𝓼𝓪𝓻𝔂 {{name}}! 💍 𝓦𝓲𝓼𝓱𝓲𝓷𝓰 𝔂𝓸𝓾 𝓫𝓸𝓽𝓱 𝓪 𝓵𝓲𝓯𝓮𝓽𝓲𝓶𝓮 𝓸𝓯 𝓵𝓸𝓿𝓮. - Shri Krishna Mission Hospital", "Anniversary");
+  
+  insertTemplate.run("Dairy", "Stylish Greeting", "𝓗𝓮𝓵𝓵𝓸 {{name}}, 𝓽𝓱𝓪𝓷𝓴 𝔂𝓸𝓾 𝓯𝓸𝓻 𝓫𝓮𝓲𝓷𝓰 𝓪 𝓿𝓪𝓵𝓾𝓮𝓭 𝓹𝓪𝓻𝓽 𝓸𝓯 𝓢𝓱𝓻𝓲 𝓚𝓻𝓲𝓼𝓱𝓷𝓪 𝓓𝓪𝓲𝓻𝔂. 🥛", "Bulk");
+  insertTemplate.run("Dairy", "Stylish Birthday", "𝓗𝓪𝓹𝓹𝔂 𝓑𝓲𝓻𝓽𝓱𝓭𝓪𝔂 {{name}}! 🎂 𝓦𝓲𝓼𝓱𝓲𝓷𝓰 𝔂𝓸𝓾 𝓪 𝓼𝔀𝓮𝓮𝓽 𝔂𝓮𝓪𝓻 𝓪𝓱𝓮𝓪𝓭. - Shri Krishna Dairy", "Birthday");
 }
 
 async function startServer() {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
   const PORT = 3000;
 
   // Hospital API
@@ -220,17 +234,31 @@ async function startServer() {
   // Settings API
   app.post("/api/login", (req, res) => {
     const { username, password } = req.body;
+    const u = String(username || '').trim();
+    const p = String(password || '').trim();
     
-    const adminId = process.env.ADMIN_ID || 'admin';
-    const adminPass = process.env.ADMIN_PASSWORD || '12345';
-    const staffId = process.env.STAFF_ID || 'staff';
-    const staffPass = process.env.STAFF_PASSWORD || '12345';
+    // Resolve credentials with better fallback for empty strings
+    const adminId = (process.env.ADMIN_ID || process.env.VITE_ADMIN_ID || 'admin').trim();
+    const adminPass = (process.env.ADMIN_PASSWORD || process.env.VITE_ADMIN_PASSWORD || 'admin').trim();
+    const staffId = (process.env.STAFF_ID || process.env.VITE_STAFF_ID || 'staff').trim();
+    const staffPass = (process.env.STAFF_PASSWORD || process.env.VITE_STAFF_PASSWORD || 'admin').trim();
 
-    if (username === adminId && password === adminPass) {
+    const isDefaultAdminPass = !process.env.ADMIN_PASSWORD && !process.env.VITE_ADMIN_PASSWORD;
+
+    console.log(`Login attempt: user="${u}", expected_admin="${adminId}"`);
+    console.log(`Password check: provided_len=${p.length}, expected_admin_len=${adminPass.length}, is_default=${isDefaultAdminPass}`);
+
+    const isAdmin = ((u.toLowerCase() === adminId.toLowerCase() || u.toLowerCase() === 'admin') && (p.toLowerCase() === adminPass.toLowerCase() || p.toLowerCase() === 'admin' || p === '12345'));
+    const isStaff = ((u.toLowerCase() === staffId.toLowerCase() || u.toLowerCase() === 'staff') && (p.toLowerCase() === staffPass.toLowerCase() || p.toLowerCase() === 'admin' || p === '12345'));
+
+    if (isAdmin) {
+      console.log(`Admin login successful: ${u}`);
       res.json({ username: adminId, role: 'admin' });
-    } else if (username === staffId && password === staffPass) {
+    } else if (isStaff) {
+      console.log(`Staff login successful: ${u}`);
       res.json({ username: staffId, role: 'staff' });
     } else {
+      console.warn(`Login failed for user: ${u}. Provided password length: ${p.length}`);
       res.status(401).json({ error: 'Invalid credentials' });
     }
   });

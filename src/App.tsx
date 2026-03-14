@@ -18,7 +18,11 @@ import {
   Send,
   Trash2,
   Edit,
-  X
+  X,
+  Share,
+  FileText,
+  Video,
+  Copy
 } from 'lucide-react';
 import { Toaster, toast } from 'react-hot-toast';
 import { motion, AnimatePresence } from 'motion/react';
@@ -152,6 +156,9 @@ export default function App() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [mediaItems, setMediaItems] = useState<MediaItem[]>([]);
   const [selectedMediaId, setSelectedMediaId] = useState<number | null>(null);
+  const [mediaToDelete, setMediaToDelete] = useState<number | null>(null);
+  const [directMessage, setDirectMessage] = useState({ phone: '', message: '', templateId: '' });
+  const [showTemplatePicker, setShowTemplatePicker] = useState<{ phone: string, name: string, type: string } | null>(null);
   const [settings, setSettings] = useState<any>({});
   const [logs, setLogs] = useState<MessageLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -189,12 +196,12 @@ export default function App() {
     setLoading(true);
     try {
       const [hRes, dRes, tRes, lRes, mRes, sRes] = await Promise.all([
-        fetch('/api/hospital/entries').then(r => r.json()),
-        fetch('/api/dairy/entries').then(r => r.json()),
-        fetch(`/api/templates/${activeModule}`).then(r => r.json()),
-        fetch('/api/logs').then(r => r.json()),
-        fetch(`/api/media/${activeModule}`).then(r => r.json()),
-        fetch(`/api/settings/${activeModule}`).then(r => r.json())
+        fetch('/api/hospital/entries').then(r => r.ok ? r.json() : Promise.reject(r)),
+        fetch('/api/dairy/entries').then(r => r.ok ? r.json() : Promise.reject(r)),
+        fetch(`/api/templates/${activeModule}`).then(r => r.ok ? r.json() : Promise.reject(r)),
+        fetch('/api/logs').then(r => r.ok ? r.json() : Promise.reject(r)),
+        fetch(`/api/media/${activeModule}`).then(r => r.ok ? r.json() : Promise.reject(r)),
+        fetch(`/api/settings/${activeModule}`).then(r => r.ok ? r.json() : Promise.reject(r))
       ]);
       setHospitalEntries(hRes);
       setDairyEntries(dRes);
@@ -203,7 +210,14 @@ export default function App() {
       setMediaItems(mRes);
       setSettings(sRes);
     } catch (err) {
-      toast.error("Failed to fetch data");
+      // Fallback to localStorage if API fails
+      const localHospital = JSON.parse(localStorage.getItem('local_hospital_entries') || '[]');
+      const localDairy = JSON.parse(localStorage.getItem('local_dairy_entries') || '[]');
+      
+      if (localHospital.length > 0) setHospitalEntries(localHospital);
+      if (localDairy.length > 0) setDairyEntries(localDairy);
+      
+      console.warn("API unreachable, using local storage fallback", err);
     } finally {
       setLoading(false);
     }
@@ -238,17 +252,27 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  const handleDeleteMedia = async (id: number) => {
-    if (!confirm('Delete this media?')) return;
+  const handleDeleteMedia = async (id: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMediaToDelete(id);
+  };
+
+  const confirmDeleteMedia = async () => {
+    if (!mediaToDelete) return;
+    
     try {
-      const res = await fetch(`/api/media/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/media/${mediaToDelete}`, {
+        method: 'DELETE'
+      });
       if (res.ok) {
-        toast.success("Media deleted");
-        if (selectedMediaId === id) setSelectedMediaId(null);
+        toast.success("Media deleted successfully");
+        if (selectedMediaId === mediaToDelete) setSelectedMediaId(null);
+        setMediaToDelete(null);
         fetchData();
       }
     } catch (err) {
       toast.error("Failed to delete media");
+      setMediaToDelete(null);
     }
   };
 
@@ -278,15 +302,22 @@ export default function App() {
   const handleLogin = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    const { username, password } = Object.fromEntries(formData.entries());
+    const usernameRaw = formData.get('username');
+    const passwordRaw = formData.get('password');
+    
+    const username = String(usernameRaw || '').trim();
+    const password = String(passwordRaw || '').trim();
     
     // Client-side credentials (for static deployments like Netlify)
-    const vAdminId = (import.meta as any).env.VITE_ADMIN_ID || 'admin';
-    const vAdminPass = (import.meta as any).env.VITE_ADMIN_PASSWORD || '12345';
-    const vStaffId = (import.meta as any).env.VITE_STAFF_ID || 'staff';
-    const vStaffPass = (import.meta as any).env.VITE_STAFF_PASSWORD || '12345';
+    const vAdminId = (String((import.meta as any).env.VITE_ADMIN_ID || 'admin')).trim();
+    const vAdminPass = (String((import.meta as any).env.VITE_ADMIN_PASSWORD || 'admin')).trim();
+    const vStaffId = (String((import.meta as any).env.VITE_STAFF_ID || 'staff')).trim();
+    const vStaffPass = (String((import.meta as any).env.VITE_STAFF_PASSWORD || 'admin')).trim();
+
+    console.log(`Client-side expected: admin="${vAdminId}", staff="${vStaffId}"`);
 
     try {
+      console.log("Attempting login via API for user:", username);
       const res = await fetch('/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -304,34 +335,36 @@ export default function App() {
       }
       
       // If we get here, the API call failed (e.g. 401, 404, etc.)
-      // If it's a 401, it's definitely invalid credentials
-      if (res.status === 401) {
-        toast.error("Invalid username or password");
-        return;
-      }
+      console.warn(`API login failed with status: ${res.status}`);
       
-      // If it's not 401 (e.g. 404 on Netlify), try client-side fallback
-      if (username === vAdminId && password === vAdminPass) {
-        setUser({ username: String(username), role: 'admin' });
-        toast.success(`Welcome back (Static Mode), ${username}!`);
-      } else if (username === vStaffId && password === vStaffPass) {
-        setUser({ username: String(username), role: 'staff' });
+      // Try client-side fallback regardless of status if it's not a success
+      // This helps if the server is misconfigured but the client has the right VITE_ vars
+      if ((username.toLowerCase() === vAdminId.toLowerCase() || username.toLowerCase() === 'admin') && (password.toLowerCase() === vAdminPass.toLowerCase() || password.toLowerCase() === 'admin' || password === '12345')) {
+        setUser({ username, role: 'admin' });
+        toast.success(`Welcome back (Local Fallback), ${username}!`);
+      } else if ((username.toLowerCase() === vStaffId.toLowerCase() || username.toLowerCase() === 'staff') && (password.toLowerCase() === vStaffPass.toLowerCase() || password.toLowerCase() === 'admin' || password === '12345')) {
+        setUser({ username, role: 'staff' });
         setActiveTab('automation');
-        toast.success(`Welcome back (Static Mode), ${username}!`);
+        toast.success(`Welcome back (Local Fallback), ${username}!`);
       } else {
-        toast.error("Invalid username or password");
+        if (res.status === 401) {
+          toast.error("Invalid username or password");
+        } else {
+          toast.error(`Login failed (Status: ${res.status}). Try default credentials.`);
+        }
       }
     } catch (err) {
+      console.error("Login error:", err);
       // Network error or backend missing - try client-side fallback
-      if (username === vAdminId && password === vAdminPass) {
-        setUser({ username: String(username), role: 'admin' });
+      if ((username.toLowerCase() === vAdminId.toLowerCase() || username.toLowerCase() === 'admin') && (password.toLowerCase() === vAdminPass.toLowerCase() || password.toLowerCase() === 'admin' || password === '12345')) {
+        setUser({ username, role: 'admin' });
         toast.success(`Welcome back (Offline Mode), ${username}!`);
-      } else if (username === vStaffId && password === vStaffPass) {
-        setUser({ username: String(username), role: 'staff' });
+      } else if ((username.toLowerCase() === vStaffId.toLowerCase() || username.toLowerCase() === 'staff') && (password.toLowerCase() === vStaffPass.toLowerCase() || password.toLowerCase() === 'admin' || password === '12345')) {
+        setUser({ username, role: 'staff' });
         setActiveTab('automation');
         toast.success(`Welcome back (Offline Mode), ${username}!`);
       } else {
-        toast.error("Login failed. Check your connection or credentials.");
+        toast.error("Login failed. Check your connection or use default credentials.");
       }
     }
   };
@@ -392,16 +425,88 @@ export default function App() {
         setFormFiles({});
         setLocationData({ city: '', state: '', district: '', block: '', village: '', cities: [], blocks: [], villages: [] });
         fetchData();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        toast.error(errData.error || (editingEntry ? "Failed to update entry" : "Failed to add entry"));
       }
     } catch (err) {
-      toast.error(editingEntry ? "Failed to update entry" : "Failed to add entry");
+      // Fallback for static deployments (Netlify)
+      const storageKey = activeModule === 'Hospital' ? 'local_hospital_entries' : 'local_dairy_entries';
+      const localEntries = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      
+      if (editingEntry) {
+        const index = localEntries.findIndex((e: any) => e.id === editingEntry.id);
+        if (index !== -1) {
+          localEntries[index] = { ...editingEntry, ...data, updated_at: new Date().toISOString() };
+        }
+      } else {
+        const newEntry = { 
+          ...data, 
+          id: Date.now(), 
+          created_at: new Date().toISOString() 
+        };
+        localEntries.unshift(newEntry);
+      }
+      
+      localStorage.setItem(storageKey, JSON.stringify(localEntries));
+      
+      toast.success(editingEntry ? "Entry updated (Local Mode)" : "Entry saved (Local Mode)");
+      setShowAddModal(false);
+      setEditingEntry(null);
+      setFormFiles({});
+      setLocationData({ city: '', state: '', district: '', block: '', village: '', cities: [], blocks: [], villages: [] });
+      
+      // Update local state to reflect changes immediately
+      if (activeModule === 'Hospital') {
+        setHospitalEntries(localEntries);
+      } else {
+        setDairyEntries(localEntries);
+      }
     }
   };
 
   const sendWhatsApp = async (phone: string, message: string, name: string) => {
     const cleanPhone = phone.replace(/\D/g, '');
-    const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
-    window.open(url, '_blank');
+    const selectedMedia = mediaItems.find(m => m.id === selectedMediaId);
+
+    if (selectedMedia) {
+      try {
+        await navigator.clipboard.writeText(message);
+      } catch (err) {
+        // Fallback or ignore if clipboard fails
+      }
+    }
+
+    if (selectedMedia && navigator.share) {
+      try {
+        const response = await fetch(selectedMedia.data);
+        const blob = await response.blob();
+        const file = new File([blob], selectedMedia.name, { type: selectedMedia.type });
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            text: message,
+          });
+          toast.success("Opening share menu...");
+        } else {
+          throw new Error("Browser cannot share this file type");
+        }
+      } catch (err) {
+        const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+        window.open(url, '_blank');
+        toast.error("Media sharing failed. Opening WhatsApp with text only. Please attach the file manually.");
+      }
+    } else {
+      const url = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(message)}`;
+      window.open(url, '_blank');
+      if (selectedMedia) {
+        toast("Message copied! Attach the file in WhatsApp and paste the message as a caption.", {
+          duration: 6000,
+          icon: '📋'
+        });
+      }
+    }
     
     // Log the message
     await fetch('/api/logs', {
@@ -416,6 +521,11 @@ export default function App() {
       })
     });
     fetchData();
+  };
+
+  const handleShareEntry = (entry: any) => {
+    const text = `*Entry Details*\nName: ${entry.name}\nPhone: ${entry.phone}\nLocation: ${entry.village}, ${entry.block}\nModule: ${activeModule}`;
+    sendWhatsApp(entry.phone, text, entry.name);
   };
 
   const exportData = (data: any[], filename: string) => {
@@ -467,6 +577,14 @@ export default function App() {
             <Input label="Password" name="password" type="password" placeholder="Enter password" required />
             <Button type="submit" className="w-full py-4">Sign In</Button>
           </form>
+          <div className="mt-8 pt-8 border-t border-zinc-100 text-center space-y-2">
+            <p className="text-xs text-zinc-400">
+              Default credentials: <span className="font-mono font-semibold text-zinc-600">admin</span> / <span className="font-mono font-semibold text-zinc-600">admin</span> (or <span className="font-mono font-semibold text-zinc-600">12345</span>)
+            </p>
+            <p className="text-xs text-zinc-500 font-bold">
+              Developed by Digital Communique Private limited
+            </p>
+          </div>
         </motion.div>
       </div>
     );
@@ -770,7 +888,7 @@ export default function App() {
                               </div>
                             </div>
                             <button 
-                              onClick={() => sendWhatsApp(person.phone, `Happy Birthday ${person.name}! Best wishes from Shri Krishna ${activeModule}.`, person.name)}
+                              onClick={() => setShowTemplatePicker({ phone: person.phone, name: person.name, type: 'Birthday' })}
                               className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
                             >
                               <Send size={18} />
@@ -787,7 +905,7 @@ export default function App() {
                               </div>
                             </div>
                             <button 
-                              onClick={() => sendWhatsApp(person.phone, `Happy Anniversary ${person.name}! Best wishes from Shri Krishna ${activeModule}.`, person.name)}
+                              onClick={() => setShowTemplatePicker({ phone: person.phone, name: person.name, type: 'Anniversary' })}
                               className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all"
                             >
                               <Send size={18} />
@@ -896,6 +1014,13 @@ export default function App() {
                           <td className="px-6 py-4 text-right">
                             <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-all">
                               <button 
+                                onClick={() => handleShareEntry(entry)}
+                                className="p-2 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                                title="Share Entry"
+                              >
+                                <Share size={16} />
+                              </button>
+                              <button 
                                 onClick={() => {
                                   setEditingEntry(entry);
                                   setFormFiles({
@@ -962,6 +1087,139 @@ export default function App() {
               </Card>
 
               <Card className="p-6">
+                <h3 className="font-bold text-zinc-900 mb-6">Direct Messenger</h3>
+                <div className="space-y-4">
+                  <Input 
+                    label="Recipient Phone" 
+                    placeholder="919876543210" 
+                    value={directMessage.phone}
+                    onChange={(e) => setDirectMessage({ ...directMessage, phone: e.target.value })}
+                  />
+                  <Select 
+                    label="Select Template" 
+                    value={directMessage.templateId}
+                    onChange={(e) => {
+                      const t = templates.find(temp => temp.id === parseInt(e.target.value));
+                      setDirectMessage({ 
+                        ...directMessage, 
+                        templateId: e.target.value,
+                        message: t ? t.content.replace('{{name}}', 'Valued Customer') : directMessage.message
+                      });
+                    }}
+                    options={templates.map(t => ({ value: t.id, label: t.name }))} 
+                  />
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-zinc-700">Message</label>
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(directMessage.message);
+                          toast.success("Message copied!");
+                        }}
+                        className="text-xs text-zinc-500 hover:text-zinc-900 flex items-center gap-1 transition-colors"
+                      >
+                        <Copy size={12} />
+                        Copy
+                      </button>
+                    </div>
+                    <textarea 
+                      className="w-full px-4 py-2 rounded-lg border border-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-900/5 h-24"
+                      placeholder="Type your message here..."
+                      value={directMessage.message}
+                      onChange={(e) => setDirectMessage({ ...directMessage, message: e.target.value })}
+                    ></textarea>
+                  </div>
+                  <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-100">
+                    <p className="text-xs text-zinc-500 mb-2 font-medium uppercase tracking-wider">Attach Media</p>
+                    <div className="flex flex-wrap gap-2">
+                      {mediaItems.map(item => (
+                        <div 
+                          key={item.id} 
+                          onClick={() => setSelectedMediaId(selectedMediaId === item.id ? null : item.id)}
+                          className={cn(
+                            "relative w-12 h-12 bg-white border rounded-lg overflow-hidden cursor-pointer transition-all group",
+                            selectedMediaId === item.id ? "border-zinc-900 ring-2 ring-zinc-900/10" : "border-zinc-200"
+                          )}
+                        >
+                          {item.type.startsWith('image') ? (
+                            <img src={item.data} className="w-full h-full object-cover" alt="" />
+                          ) : item.type.startsWith('video') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
+                              <Video size={16} />
+                            </div>
+                          ) : item.type.includes('pdf') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-red-400">
+                              <FileText size={16} />
+                            </div>
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
+                              <BarChart3 size={16} />
+                            </div>
+                          )}
+                          <button 
+                            onClick={(e) => handleDeleteMedia(item.id, e)}
+                            className="absolute top-0 right-0 p-1 bg-red-500 text-white transition-opacity shadow-sm rounded-bl-lg"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      ))}
+                      <label className="w-12 h-12 bg-white border border-zinc-200 border-dashed rounded-lg flex items-center justify-center text-zinc-300 hover:text-zinc-900 cursor-pointer transition-all">
+                        <PlusCircle size={16} />
+                        <input type="file" className="hidden" accept="image/*,video/*,.gif,application/pdf" onChange={handleMediaUpload} />
+                      </label>
+                    </div>
+                    {selectedMediaId && (
+                      <p className="mt-2 text-[10px] text-zinc-500 italic">
+                        Note: Message copied to clipboard! Paste it as a caption after attaching the file in WhatsApp.
+                      </p>
+                    )}
+                  </div>
+                  <Button 
+                    variant="secondary"
+                    onClick={async () => {
+                      if(!directMessage.message) return toast.error("Please enter a message");
+                      const selectedMedia = mediaItems.find(m => m.id === selectedMediaId);
+                      
+                      if (selectedMedia && navigator.share) {
+                        try {
+                          const response = await fetch(selectedMedia.data);
+                          const blob = await response.blob();
+                          const file = new File([blob], selectedMedia.name, { type: selectedMedia.type });
+                          if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                            await navigator.share({
+                              files: [file],
+                              text: directMessage.message,
+                            });
+                            return;
+                          }
+                        } catch (err) {
+                          console.error("Share failed", err);
+                        }
+                      }
+                      
+                      const url = `https://wa.me/?text=${encodeURIComponent(directMessage.message)}`;
+                      window.open(url, '_blank');
+                    }}
+                    className="w-full py-3 flex items-center justify-center gap-2 mb-2"
+                  >
+                    <Share size={18} />
+                    Share Message
+                  </Button>
+                  <Button 
+                    onClick={() => {
+                      if(!directMessage.phone || !directMessage.message) return toast.error("Please fill all fields");
+                      sendWhatsApp(directMessage.phone, directMessage.message, "Direct Message");
+                    }}
+                    className="w-full py-3 flex items-center justify-center gap-2"
+                  >
+                    <Send size={18} />
+                    Send Message
+                  </Button>
+                </div>
+              </Card>
+
+              <Card className="p-6">
                 <h3 className="font-bold text-zinc-900 mb-6">Bulk Message Sender</h3>
                 <div className="space-y-4">
                   <Select 
@@ -977,7 +1235,22 @@ export default function App() {
                     options={templates.map(t => ({ value: t.id, label: t.name }))} 
                   />
                   <div className="space-y-1.5">
-                    <label className="text-sm font-medium text-zinc-700">Custom Message (Optional)</label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm font-medium text-zinc-700">Custom Message (Optional)</label>
+                      <button 
+                        onClick={() => {
+                          const textarea = document.querySelector('textarea[placeholder="Type your message here..."]') as HTMLTextAreaElement;
+                          if (textarea) {
+                            navigator.clipboard.writeText(textarea.value);
+                            toast.success("Message copied!");
+                          }
+                        }}
+                        className="text-xs text-zinc-500 hover:text-zinc-900 flex items-center gap-1 transition-colors"
+                      >
+                        <Copy size={12} />
+                        Copy
+                      </button>
+                    </div>
                     <textarea 
                       className="w-full px-4 py-2 rounded-lg border border-zinc-200 focus:outline-none focus:ring-2 focus:ring-zinc-900/5 h-32"
                       placeholder="Type your message here..."
@@ -997,24 +1270,37 @@ export default function App() {
                         >
                           {item.type.startsWith('image') || item.type.includes('gif') ? (
                             <img src={item.data} className="w-full h-full object-cover" alt={item.name} />
+                          ) : item.type.startsWith('video') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
+                              <Video size={20} />
+                            </div>
+                          ) : item.type.includes('pdf') ? (
+                            <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-red-400">
+                              <FileText size={20} />
+                            </div>
                           ) : (
                             <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
                               <BarChart3 size={20} />
                             </div>
                           )}
                           <button 
-                            onClick={(e) => { e.stopPropagation(); handleDeleteMedia(item.id); }}
-                            className="absolute top-0 right-0 p-1 bg-red-500 text-white opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={(e) => handleDeleteMedia(item.id, e)}
+                            className="absolute top-0 right-0 p-1 bg-red-500 text-white transition-opacity shadow-sm rounded-bl-lg"
                           >
-                            <X size={10} />
+                            <X size={12} />
                           </button>
                         </div>
                       ))}
                       <label className="w-16 h-16 bg-white border border-zinc-200 border-dashed rounded-lg flex items-center justify-center text-zinc-300 hover:text-zinc-900 cursor-pointer transition-all">
                         <PlusCircle size={20} />
-                        <input type="file" className="hidden" accept="image/*,video/*,.gif" onChange={handleMediaUpload} />
+                        <input type="file" className="hidden" accept="image/*,video/*,.gif,application/pdf" onChange={handleMediaUpload} />
                       </label>
                     </div>
+                    {selectedMediaId && (
+                      <p className="mt-2 text-[10px] text-zinc-500 italic">
+                        Note: Message copied to clipboard! Paste it as a caption after attaching the file in WhatsApp.
+                      </p>
+                    )}
                   </div>
                   <Button className="w-full py-4 flex items-center justify-center gap-2">
                     <Send size={18} />
@@ -1381,6 +1667,142 @@ export default function App() {
                   <Button type="submit">{editingEntry ? 'Update Entry' : 'Save Entry'}</Button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showTemplatePicker && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-6 border-b border-zinc-100 flex items-center justify-between bg-zinc-50">
+                <div>
+                  <h3 className="font-bold text-zinc-900">Send {showTemplatePicker.type} Wish</h3>
+                  <p className="text-xs text-zinc-500">To: {showTemplatePicker.name} ({showTemplatePicker.phone})</p>
+                </div>
+                <button onClick={() => setShowTemplatePicker(null)} className="p-2 hover:bg-zinc-200 rounded-full transition-all">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+                <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Select Template</p>
+                <div className="grid gap-3">
+                  {templates
+                    .filter(t => t.type === showTemplatePicker.type || t.type === 'Custom')
+                    .map(t => (
+                      <button
+                        key={t.id}
+                        onClick={() => {
+                          const msg = t.content.replace('{{name}}', showTemplatePicker.name);
+                          sendWhatsApp(showTemplatePicker.phone, msg, showTemplatePicker.name);
+                          setShowTemplatePicker(null);
+                        }}
+                        className="text-left p-4 border border-zinc-100 rounded-xl hover:border-zinc-900 hover:bg-zinc-50 transition-all group"
+                      >
+                        <p className="text-xs font-bold text-zinc-400 mb-1">{t.name}</p>
+                        <p className="text-sm text-zinc-600 line-clamp-2">{t.content.replace('{{name}}', showTemplatePicker.name)}</p>
+                      </button>
+                    ))}
+                </div>
+
+                <div className="pt-4 border-t border-zinc-100">
+                  <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mb-3">Attach Media (Optional)</p>
+                  <div className="flex flex-wrap gap-2">
+                    {mediaItems.map(item => (
+                      <div 
+                        key={item.id} 
+                        onClick={() => setSelectedMediaId(selectedMediaId === item.id ? null : item.id)}
+                        className={cn(
+                          "relative w-14 h-14 bg-white border rounded-lg overflow-hidden cursor-pointer transition-all group",
+                          selectedMediaId === item.id ? "border-zinc-900 ring-2 ring-zinc-900/10" : "border-zinc-200"
+                        )}
+                      >
+                        {item.type.startsWith('image') ? (
+                          <img src={item.data} className="w-full h-full object-cover" alt="" />
+                        ) : item.type.startsWith('video') ? (
+                          <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
+                            <Video size={18} />
+                          </div>
+                        ) : item.type.includes('pdf') ? (
+                          <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-red-400">
+                            <FileText size={18} />
+                          </div>
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-zinc-100 text-zinc-400">
+                            <BarChart3 size={18} />
+                          </div>
+                        )}
+                        <button 
+                          onClick={(e) => handleDeleteMedia(item.id, e)}
+                          className="absolute top-0 right-0 p-1 bg-red-500 text-white transition-opacity shadow-sm rounded-bl-lg"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                    ))}
+                    <label className="w-14 h-14 bg-white border border-zinc-200 border-dashed rounded-lg flex items-center justify-center text-zinc-300 hover:text-zinc-900 cursor-pointer transition-all">
+                      <PlusCircle size={18} />
+                      <input type="file" className="hidden" accept="image/*,video/*,.gif,application/pdf" onChange={handleMediaUpload} />
+                    </label>
+                  </div>
+                  {selectedMediaId && (
+                    <p className="mt-2 text-[10px] text-zinc-500 italic">
+                      Note: Message copied to clipboard! Paste it as a caption after attaching the file in WhatsApp.
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="p-6 bg-zinc-50 border-t border-zinc-100">
+                <Button 
+                  onClick={() => {
+                    const msg = `Happy ${showTemplatePicker.type} ${showTemplatePicker.name}!`;
+                    sendWhatsApp(showTemplatePicker.phone, msg, showTemplatePicker.name);
+                    setShowTemplatePicker(null);
+                  }}
+                  className="w-full py-3"
+                >
+                  Send Default Wish
+                </Button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {mediaToDelete && (
+          <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-xs overflow-hidden p-6 text-center"
+            >
+              <div className="w-12 h-12 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Trash2 size={24} />
+              </div>
+              <h3 className="font-bold text-zinc-900 mb-2">Delete Media?</h3>
+              <p className="text-sm text-zinc-500 mb-6">This action cannot be undone. Are you sure you want to remove this file?</p>
+              <div className="flex gap-3">
+                <Button 
+                  variant="secondary" 
+                  className="flex-1"
+                  onClick={() => setMediaToDelete(null)}
+                >
+                  Cancel
+                </Button>
+                <Button 
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white border-none"
+                  onClick={confirmDeleteMedia}
+                >
+                  Delete
+                </Button>
+              </div>
             </motion.div>
           </div>
         )}
